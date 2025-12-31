@@ -1,0 +1,282 @@
+Task 1: Calculate MIN, MAX, and median recency to understand how often customers purchase.
+
+WITH median AS (
+SELECT  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY Recency) OVER() AS median_recency
+FROM    clean_marketing_campaign
+)
+SELECT	MIN(Recency) AS min_recency,
+        MAX(Recency) AS max_recency,
+        (SELECT MAX(median_recency) FROM Median) AS median_recency
+FROM    clean_marketing_campaign;
+
+--------------------------------------------
+min_recency  max_recency  median_recency
+0            99           49
+--------------------------------------------
+The median recency is 49 days. making the 45-55 day window great for retention campaigns.
+
+
+Task 2: What is the median recency per age segment and how large is each segment.
+
+WITH recency_data AS (
+SELECT	id,
+        Recency,
+        CASE 
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 15 AND 24 THEN 'Youth'
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 25 AND 34 THEN 'Young Adults'
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 35 AND 64 THEN 'Adults'
+            ELSE 'Seniors'
+        END AS age_segmentation
+FROM    clean_marketing_campaign
+)
+SELECT    DISTINCT
+          age_segmentation,
+          PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY Recency) OVER (PARTITION BY age_segmentation) AS median_recency,
+          COUNT(id) OVER (PARTITION BY age_segmentation) AS customer_count,
+          CAST(COUNT(id) OVER (PARTITION BY age_segmentation) * 100.0 / COUNT(id) OVER () AS decimal(5,2)) AS pct_customers
+FROM    recency_data
+ORDER BY    median_recency DESC;
+
+-----------------------------------------------------------------
+age_segmentation  median_recency  customer_count  pct_customers
+Seniors           53	            81	            3.62
+Youth             51	            89	            3.97
+Adults            50	            1676            74.82
+Young Adults      46	            394	            17.59
+------------------------------------------------------------------
+Young adults have the shortest purchase cycle (46 days) and make up 17.6% of customers. Adults define the typical cycle (50 days) at 74.8%. Young adults are a prime segment for targeted retention or upsell campaigns.
+
+** looking deeper into analyzing purchase recency patterns among young adults, segmented by kid status and marital status **
+WITH recency_data AS (
+SELECT	id,
+        Recency,
+        CASE 
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 15 AND 24 THEN 'Youth'
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 25 AND 34 THEN 'Young Adults'
+            WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 35 AND 64 THEN 'Adults'
+            ELSE 'Seniors'
+        END AS age_segmentation,
+        CASE	
+            WHEN Kidhome + Teenhome > 0 THEN 'Has Kids' ELSE 'No Kids' 
+        END AS kids_status,
+        CASE
+            WHEN Marital_Status IN ('Married', 'Together') THEN 'Committed'
+            WHEN Marital_Status IN ('Single', 'Alone', 'YOLO', 'Absurd') THEN 'Single'
+            WHEN Marital_Status = 'Widow' THEN 'Widowed'
+            WHEN Marital_Status IN ('Divorced', 'Separated') THEN 'Separated'
+            ELSE 'Other'
+        END AS marital_group
+FROM    clean_marketing_campaign
+)
+SELECT    DISTINCT
+          age_segmentation,
+          kids_status,
+          marital_group,
+          PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY Recency) OVER (PARTITION BY age_segmentation, kids_status, marital_group) AS median_recency,
+          COUNT(id) OVER (PARTITION BY age_segmentation, kids_status, marital_group) AS customer_count,
+          CAST(COUNT(id) OVER (PARTITION BY age_segmentation, kids_status, marital_group) * 100.0 / COUNT(id) OVER () AS decimal(5,2)) AS pct_customers
+FROM    recency_data
+WHERE    age_segmentation = 'young adults'
+ORDER BY    median_recency DESC;
+
+Within young adults those in committed relationships without kids (20.5% of this group) purchase most frequently (38 days) making them ideal for early retention or upsell campaigns. Young adults who are separated with kids have the longest cycle (60 days) but represent only 2% so they are less critical.
+
+
+
+Task 3: Analyze products that generate the highest average customer spend and compare the median and average spending behaviors across products.
+
+WITH unpivoted AS (
+SELECT	'wines' AS product, mntwines AS spend FROM clean_marketing_campaign
+UNION ALL
+SELECT	'fruits', mntfruits FROM clean_marketing_campaign
+UNION ALL
+SELECT 'meats', mntmeatproducts FROM clean_marketing_campaign
+UNION ALL 
+SELECT 'fish', mntfishproducts FROM clean_marketing_campaign
+UNION ALL
+SELECT 'Sweets', MntSweetProducts FROM clean_marketing_campaign
+UNION ALL
+SELECT 'Gold', MntGoldProds FROM clean_marketing_campaign
+),
+median AS (
+SELECT    DISTINCT product,
+          PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY spend) OVER (PARTITION BY product) AS median
+FROM      unpivoted
+)
+SELECT    u.product,
+          m.median,
+          AVG(u.spend) AS avg_spend
+FROM    median m
+JOIN    unpivoted u ON m.product = u.product
+GROUP BY    u.product, m.median
+ORDER BY    avg_spend DESC;
+
+-----------------------------
+product  median  avg_spend   
+wines    173.5   303       
+meats    67      166       
+Gold     24      44          
+fish     12      37          
+Sweets   8       27         
+fruits   8       26        
+------------------------------
+Wines have the highest spend ($303 avg, $174 median) so promote and offer loyalty programs. Meats and gold ($166/$44) are good for upsells. Fish, wweets, and fruits ($26–$37) suit cross sell or bundle promotions.
+
+Task 5: Average product spend per customer by age group.
+
+WITH age_groups AS (
+SELECT	  CASE 
+              WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 15 AND 24 THEN 'Youth'
+              WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 25 AND 34 THEN 'Young Adults'
+              WHEN YEAR(Dt_Customer) - Year_Birth BETWEEN 35 AND 64 THEN 'Adults'
+              ELSE 'Seniors'
+          END AS age_segmentation,
+          MntFishProducts, 
+          MntMeatProducts,
+          MntWines,
+          MntFruits,
+          MntSweetProducts,
+          MntGoldProds
+FROM    clean_marketing_campaign
+)
+SELECT    age_segmentation,
+          CAST(AVG(MntWines) AS decimal (10,1)) AS wine_avg,
+          CAST(AVG(MntMeatProducts) AS decimal (10,1)) AS meat_avg,
+          CAST(AVG(MntFishProducts) AS decimal (10,1)) AS fish_avg,
+          CAST(AVG(MntFruits) AS decimal (10,1)) AS fruits_avg,
+          CAST(AVG(MntSweetProducts) AS decimal (10,1)) AS sweets_avg,
+          CAST(AVG(MntGoldProds) AS decimal (10,1)) AS gold_avg
+FROM    clean_marketing_campaign
+GROUP BY    age_segmentation;
+
+Wine has the highest average spend especially among seniors ($479) and adults ($314) making them prime targets for upsell campaigns. Young adults ($225) and youth ($297) also show strong wine spend for loyalty efforts. Meats and gold have moderate spend while fruits and sweets are low suggesting cross sell or promotional opportunities.
+
+
+Task 6: Campaign response rates.
+
+SELECT    Campaign, 
+          response_rate_percent
+FROM    (
+          SELECT 'Cmp1' AS Campaign, ROUND(AVG(CAST(AcceptedCmp1 AS FLOAT))* 100,2) AS response_rate_percent FROM clean_marketing_campaign
+          UNION ALL
+          SELECT 'Cmp2', ROUND(AVG(CAST(AcceptedCmp2 AS FLOAT))*100,2) FROM clean_marketing_campaign
+          UNION ALL
+          SELECT 'Cmp3', ROUND(AVG(CAST(AcceptedCmp3 AS FLOAT))*100,2) FROM clean_marketing_campaign
+          UNION ALL
+          SELECT 'Cmp4', ROUND(AVG(CAST(AcceptedCmp4 AS FLOAT))*100,2) FROM clean_marketing_campaign
+          UNION ALL
+          SELECT 'Cmp5', ROUND(AVG(CAST(AcceptedCmp5 AS FLOAT))*100,2) FROM clean_marketing_campaign
+        ) AS t
+ORDER BY    response_rate_percent DESC;
+
+--------------------------------
+Campaign  response_rate_percent
+response  14.91
+Cmp4      7.46
+Cmp3      7.28
+Cmp5      7.28
+Cmp1      6.43
+Cmp2      1.34
+---------------------------------
+Cmp3–Cmp5 show strong engagement (>7%), while Cmp1 lags at 6.43% and Cmp2 performs poorly at 1.34%. Targeted testing of messaging, offers and segmentation could improve response rates across campaigns.
+
+
+Task 7: Cross segment campaign performance (kids vs no kids)
+
+SELECT    CASE 
+              WHEN Kidhome + Teenhome > 0 THEN 'Has Kids' ELSE 'No Kids' 
+          END AS kids_status,
+          SUM(CASE WHEN AcceptedCmp1 > 0 THEN 1 ELSE 0 END) AS cmp1,
+          SUM(CASE WHEN AcceptedCmp2 > 0 THEN 1 ELSE 0 END) AS cmp2,
+          SUM(CASE WHEN AcceptedCmp3 > 0 THEN 1 ELSE 0 END) AS cmp3,
+          SUM(CASE WHEN AcceptedCmp4 > 0 THEN 1 ELSE 0 END) AS cmp4,
+          SUM(CASE WHEN AcceptedCmp5 > 0 THEN 1 ELSE 0 END) AS cmp5
+FROM    clean_marketing_campaign
+GROUP BY    CASE WHEN Kidhome + Teenhome > 0 THEN 'Has Kids' ELSE 'No Kids' END
+ORDER BY    kids_status;
+
+-----------------------------------------------
+kids_status  cmp1  cmp2  cmp3  cmp4  cmp5
+Has Kids     34    12    115   98    25
+No Kids      110   18    48    69    138
+-----------------------------------------------
+Families with kids engage most with Cmp3 (115 customers) but show low interest in Cmp2 (12), while customers without kids prefer Cmp5 (138) and also show minimal intrest in Cmp2 (18). Focus promotions or bundles for families on Cmp3 and test messaging or offers for Cmp2 to boost engagement across all segments.
+
+
+Task 8: Identify upsell and cross sell opportunities.
+
+WITH unpivoted AS (
+SELECT id, 'Wines' AS product_type, MntWines AS spend FROM clean_marketing_campaign
+UNION ALL
+SELECT id, 'Meat', MntMeatProducts FROM clean_marketing_campaign
+UNION ALL
+SELECT id, 'Fish', MntFishProducts FROM clean_marketing_campaign
+UNION ALL
+SELECT id, 'Fruits', MntFruits FROM clean_marketing_campaign
+UNION ALL
+SELECT id, 'Gold', MntGoldProds FROM clean_marketing_campaign
+UNION ALL
+SELECT id, 'Sweets', MntSweetProducts FROM clean_marketing_campaign
+),
+product_medians AS (
+SELECT    id, 
+          product_type,
+          spend,
+          PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY spend) OVER (PARTITION BY product_type) AS median_spend
+FROM unpivoted
+),
+upsell AS (
+SELECT    id, 
+          product_type
+FROM    product_medians
+WHERE    spend > 0 AND 
+         spend < median_spend
+),
+crosssell AS (
+SELECT    id, 
+          product_type
+FROM    unpivoted
+WHERE    spend = 0
+),
+combined AS (
+SELECT 'Upsell' AS opportunity_type, id, product_type FROM upsell
+UNION ALL
+SELECT 'Cross-sell', id, product_type FROM crosssell
+),
+totals AS (
+SELECT    COUNT(DISTINCT id) AS num_customers 
+FROM    clean_marketing_campaign
+)
+SELECT    c.opportunity_type,
+          c.product_type,
+          COUNT(c.id) AS num_customers,
+          CAST(COUNT(c.id) * 100.0 / t.num_customers AS decimal(10,2)) AS pct_of_customers
+FROM    combined c
+CROSS JOIN    totals t
+GROUP BY    c.opportunity_type, c.product_type, t.num_customers
+ORDER BY    opportunity_type, pct_of_customers DESC;
+
+Cross sell: Sweets (419 customers, 18.7% of total), fruits (400, 17.8%), and fish (384, 17%) have the highest number and percentage of customers who haven't purchased yet. These products represent strong cross sell potential, while meat and wines (<1%) have very few non buyers so cross sell opportunities there are limited. 
+Upsell: Meat, wine, and gold show the strongest upsell potential with 46–50% of customers spending below the median in each category.
+
+
+Task 9: Average customer spend by income, marital status and kids.
+
+WITH grouped_spend AS (
+SELECT    Income_Segmentation,
+          Marital_Status,
+          CASE 
+              WHEN Kidhome + Teenhome > 0 THEN 'Has Kids' ELSE 'No Kids' 
+          END AS kids_status,
+          AVG(total_spend) AS avg_spend
+FROM      clean_marketing_campaign
+GROUP BY    Income_Segmentation, Marital_Status, CASE WHEN Kidhome + Teenhome > 0 THEN 'Has Kids' ELSE 'No Kids' END
+)
+SELECT    Income_Segmentation,
+          Marital_Status,
+          kids_status,
+          CAST(avg_spend AS decimal (10,2)) AS avg_spend_per_customer
+FROM      grouped_spend
+ORDER BY    avg_spend_per_customer DESC;
+
+Customers without kids show the highest average spend across income levels with the strongest spending coming from $61k–$150k and higher income segments ($1.3k–$1.7k). Households with kids especially those earning $60k or less have the lowest average spend ($6-$506) indicating opportunities for discounts and cross sell campaigns.
