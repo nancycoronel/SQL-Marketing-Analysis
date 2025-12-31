@@ -1,0 +1,72 @@
+-- Create a copy of the marketing campaign table to protect the original data.
+SELECT    * 
+INTO    clean_marketing_campaign
+FROM    marketing_campaign
+WHERE   1=0;
+
+-- Insert data
+INSERT 
+INTO    clean_marketing_campaign
+SELECT    * 
+FROM      marketing_campaign;
+
+-- Check for duplicates
+WITH dups AS (
+SELECT    ID,
+          ROW_NUMBER() OVER(PARTITION BY ID, Year_Birth, Education, Marital_Status, Income, Kidhome, Teenhome, Dt_Customer, Recency ORDER BY (SELECT NULL)) AS row_num
+FROM clean_marketing_campaign
+)
+SELECT    * 
+FROM     dups 
+WHERE    row_num > 1; --no dups
+
+-- Check for nulls in critical columns
+SELECT * FROM clean_marketing_campaign WHERE Income IS NULL; -- 24 rows missing income
+SELECT * FROM clean_marketing_campaign WHERE Marital_Status IS NULL; -- 0
+SELECT * FROM clean_marketing_campaign WHERE Education IS NULL; -- 0
+
+-- Add income segmentation and outlier flag
+ALTER TABLE clean_marketing_campaign ADD Income_Segmentation VARCHAR(50);
+ALTER TABLE clean_marketing_campaign ADD outlier_flag VARCHAR(50);
+ALTER TABLE clean_marketing_campaign ADD age_segmentation VARCHAR(50);
+
+UPDATE clean_marketing_campaign
+SET Income_Segmentation = CASE
+    WHEN Income > 0 AND Income <= 30000 THEN '<=30k'
+    WHEN Income > 30000 AND Income <= 60000 THEN '31k-60k'
+    WHEN Income > 60000 AND Income <= 100000 THEN '61k-100k'
+    WHEN Income > 100000 AND Income <= 150000 THEN '101k-150k'
+    WHEN Income > 150000 THEN '150k+'
+    WHEN Income IS NULL THEN 'Unknown Income'
+END;
+
+-- Identify statistical outliers using IQR
+WITH stats AS (
+SELECT   DISTINCT 
+         PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY Income) OVER () AS Q1,
+         PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY Income) OVER () AS Q3
+FROM     clean_marketing_campaign
+WHERE    Income IS NOT NULL 
+)
+UPDATE clean_marketing_campaign
+SET outlier_flag = CASE
+                        WHEN Income IS NULL THEN 'Unknown Income'
+                        WHEN Income > (s.Q3 + 1.5 * (s.Q3-s.Q1)) THEN 'Extreme High Income'
+                        ELSE 'Normal Range'
+                    END
+FROM clean_marketing_campaign c
+CROSS JOIN (SELECT MAX(Q1) AS Q1, MAX(Q3) AS Q3 FROM stats) s;
+
+-- Add age segmentation column
+UPDATE clean_marketing_campaign
+SET age_segmentation = CASE 
+                          WHEN (YEAR(Dt_Customer)- Year_Birth) BETWEEN 15 AND 24 THEN 'Youth'
+                          WHEN (YEAR(Dt_Customer)- Year_Birth) BETWEEN 25 AND 34 THEN 'Young Adults'
+                          WHEN (YEAR(Dt_Customer)- Year_Birth) BETWEEN 35 AND 64 THEN 'Adults'
+                          ELSE 'Seniors'
+                        END;
+
+-- Add total spend column
+ALTER TABLE clean_marketing_campaign ADD total_spend DECIMAL(10,2);
+UPDATE clean_marketing_campaign
+SET total_spend = MntWines + MntFruits + MntMeatProducts + MntFishProducts + MntSweetProducts + MntGoldProds;
